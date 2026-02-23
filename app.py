@@ -5,7 +5,7 @@ from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- KONFIGURATION (Mapper til din Excel-struktur) ---
+# --- KONFIGURATION (Matcher dine Excel-kolonner) ---
 I_NAME, I_CAT, I_ID, I_QTY, I_RRP, I_COST = 'produktnavn', 'kategorinavn', 'stregkode', 'Lager', 'DKKRRP', 'kostpris'
 S_NAME, S_CAT, S_ID, S_QTY, S_DISC, S_TOT = 'Produktnavn', 'Kategorinavn', 'Stregkode', 'Salg', 'Rabat (DKK)', 'Total (DKK)'
 INVENTORY_FILE, SALES_FILE, DATE_FILE = 'master_inventory.csv', 'master_sales.csv', 'dates.csv'
@@ -48,7 +48,7 @@ dates = load_data(DATE_FILE)
 st.sidebar.title("🏢 Management")
 menu = st.sidebar.selectbox("Vælg Analyse", ["📊 Overblik", "📏 Størrelses Profil", "🎯 Strategisk Analyse", "📥 Upload Data"])
 
-# --- UPLOAD MODUL ---
+# --- MODUL: UPLOAD DATA ---
 if menu == "📥 Upload Data":
     st.header("📦 Datastyring")
     col_a, col_b = st.columns(2)
@@ -61,34 +61,38 @@ if menu == "📥 Upload Data":
         if f_inv:
             df_i = pd.read_excel(f_inv) if f_inv.name.endswith('xlsx') else pd.read_csv(f_inv)
             df_i.to_csv(INVENTORY_FILE, index=False)
+            st.info("Lager gemt.")
         if f_sales:
             raw = pd.read_excel(f_sales) if f_sales.name.endswith('xlsx') else pd.read_csv(f_sales)
             
-            # --- FIND DATOER & KLIP DATA ---
+            # 1. Find datoer i bunden (række 240 ca.)
             s_start, s_end, extract_date = "Ukendt", "Ukendt", "Ukendt"
             try:
                 for i in range(len(raw)):
-                    val_a = str(raw.iloc[i, 0]).lower()
-                    if "periode" in val_a:
-                        s_start = raw.iloc[i+1, 0] # Fra dato
-                        s_end = raw.iloc[i+1, 1]   # Til dato
-                        extract_date = raw.iloc[i+1, 3] # Udtræksdato
+                    if "periode" in str(raw.iloc[i, 0]).lower():
+                        s_start, s_end, extract_date = raw.iloc[i+1, 0], raw.iloc[i+1, 1], raw.iloc[i+1, 3]
                         break
                 
-                # Finder rækken med "Total" og fjerner alt derefter
+                # 2. Rens data: Stop ved 'Total', men behold 'Diverse' (rækken lige før)
                 total_idx = raw[raw[S_NAME].astype(str).str.contains("Total", case=False, na=False)].index
                 clean_sales = raw.iloc[:total_idx[0]] if not total_idx.empty else raw
                 
-                clean_sales.dropna(subset=[S_ID]).to_csv(SALES_FILE, index=False)
+                # Fjern kun helt tomme rækker, så 'Diverse' bliver bevaret
+                clean_sales = clean_sales.dropna(subset=[S_NAME])
+                clean_sales.to_csv(SALES_FILE, index=False)
+                
+                # Gem dato-info
                 pd.DataFrame({'type':['inv','start','end','ext'], 'date':[str(datetime.now()), s_start, s_end, extract_date]}).to_csv(DATE_FILE, index=False)
-                st.success(f"Salg gemt! Periode: {s_start} - {s_end}")
+                st.success(f"Salg indlæst! Periode: {s_start} - {s_end}")
+                st.balloons()
             except Exception as e: st.error(f"Fejl ved behandling: {e}")
 
-# --- DASHBOARD MODULER ---
+# --- DASHBOARD LOGIK ---
 elif not sales.empty and not inv.empty:
-    # DATA ENGINE (Konverterer tekst til tal korrekt)
+    # Konvertering til tal (Sikrer Diverse tælles med)
     sales[S_QTY] = pd.to_numeric(sales[S_QTY], errors='coerce').fillna(0)
     sales[S_TOT] = pd.to_numeric(sales[S_TOT], errors='coerce').fillna(0)
+    sales[S_DISC] = pd.to_numeric(sales[S_DISC], errors='coerce').fillna(0)
     inv[I_QTY] = pd.to_numeric(inv[I_QTY], errors='coerce').fillna(0)
 
     for df, col in [(sales, S_NAME), (inv, I_NAME)]:
@@ -98,7 +102,7 @@ elif not sales.empty and not inv.empty:
     inv['Brand'] = inv['Sæson'].apply(get_brand)
     sales['Brand'] = sales['Sæson'].apply(get_brand)
     
-    # Nedskrivning
+    # Nedskrivning af lager
     sales_sum = sales.groupby(S_ID)[S_QTY].sum().reset_index()
     inv_current = pd.merge(inv, sales_sum, left_on=I_ID, right_on=S_ID, how='left').fillna(0)
     inv_current[I_QTY] = inv_current[I_QTY] - inv_current[S_QTY]
@@ -109,7 +113,6 @@ elif not sales.empty and not inv.empty:
 
     if menu == "📊 Overblik":
         st.header("Hovednøgletal")
-        st.info(f"📅 Periode: {dates.iloc[1,1]} til {dates.iloc[2,1]}")
         c1, c2, c3 = st.columns(3)
         c1.metric("Omsætning", f"{f_sales[S_TOT].sum():,.0f} kr")
         c2.metric("Solgte enheder", f"{f_sales[S_QTY].sum():,.0f}")
@@ -124,10 +127,9 @@ elif not sales.empty and not inv.empty:
     elif menu == "📏 Størrelses Profil":
         st.header("📏 Størrelses- & Tendensanalyse")
         prod_cats = sorted(f_inv[I_CAT].unique())
-        sel_prod_cat = st.multiselect("Filtrer på Produktgruppe:", prod_cats)
+        sel_prod_cat = st.multiselect("Filtrer på Produktgruppe (Slicer):", prod_cats)
         
-        d_inv = f_inv.copy()
-        d_sales = f_sales.copy()
+        d_inv, d_sales = f_inv.copy(), f_sales.copy()
         if sel_prod_cat:
             d_inv = d_inv[d_inv[I_CAT].isin(sel_prod_cat)]
             d_sales = d_sales[d_sales[S_CAT].isin(sel_prod_cat)]
@@ -143,7 +145,7 @@ elif not sales.empty and not inv.empty:
         fig_comp = go.Figure()
         fig_comp.add_trace(go.Bar(x=comp['Størrelse'], y=comp['På Lager'], name='Lager', marker_color='#1f77b4'))
         fig_comp.add_trace(go.Bar(x=comp['Størrelse'], y=comp['Solgt'], name='Salg', marker_color='#ff7f0e'))
-        fig_comp.update_layout(barmode='group', title="Lager vs. Salg", template="plotly_white")
+        fig_comp.update_layout(barmode='group', title="Sammenligning: Lager vs. Salg", template="plotly_white")
         st.plotly_chart(fig_comp, use_container_width=True)
 
     elif menu == "🎯 Strategisk Analyse":
@@ -151,11 +153,11 @@ elif not sales.empty and not inv.empty:
         col1, col2 = st.columns(2)
         with col1:
             top_cat = f_sales.groupby(S_CAT)[S_TOT].sum().sort_values(ascending=False).head(10).reset_index()
-            st.plotly_chart(px.bar(top_cat, x=S_TOT, y=S_CAT, orientation='h', color=S_TOT, color_continuous_scale="Greens", title="Top 10 Kategorier"), use_container_width=True)
+            st.plotly_chart(px.bar(top_cat, x=S_TOT, y=S_CAT, orientation='h', color=S_TOT, color_continuous_scale="Greens", title="Top 10 Kategorier (Indtjening)"), use_container_width=True)
         with col2:
             md = f_sales.groupby(S_CAT).agg({S_TOT: 'sum', S_DISC: 'sum'}).reset_index()
             md['Rabat %'] = (md[S_DISC] / (md[S_TOT] + md[S_DISC]) * 100).fillna(0)
-            st.plotly_chart(px.bar(md.sort_values('Rabat %', ascending=False).head(10), x='Rabat %', y=S_CAT, orientation='h', color='Rabat %', color_continuous_scale="Reds", title="Markdown %"), use_container_width=True)
+            st.plotly_chart(px.bar(md.sort_values('Rabat %', ascending=False).head(10), x='Rabat %', y=S_CAT, orientation='h', color='Rabat %', color_continuous_scale="Reds", title="Rabat-tryk (Markdown %)"), use_container_width=True)
 
 else:
-    st.warning("⚠️ Data mangler eller er korrupte. Gå til 'Upload Data' og upload begge filer igen for at nulstille systemet.")
+    st.warning("⚠️ Ingen data fundet. Gå til 'Upload Data' og upload begge filer igen.")
