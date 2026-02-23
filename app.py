@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime
+import plotly.express as px
+import plotly.graph_objects as go
 
 # --- KONFIGURATION ---
-INV_NAME, INV_CAT, INV_ID, INV_QTY, INV_COST, INV_RRP = 'produktnavn', 'kategorinavn', 'stregkode', 'Lager', 'kostpris', 'DKKRRP'
-SALES_NAME, SALES_CAT, SALES_ID, SALES_QTY, SALES_PRICE = 'Produktnavn', 'kategorinavn', 'stregkode', 'Salg', 'salgspris'
+I_NAME, I_CAT, I_ID, I_QTY, I_RRP, I_COST = 'produktnavn', 'kategorinavn', 'stregkode', 'Lager', 'DKKRRP', 'kostpris'
+S_NAME, S_CAT, S_ID, S_QTY, S_DISC, S_TOT = 'Produktnavn', 'Kategorinavn', 'Stregkode', 'Salg', 'Rabat (DKK)', 'Total (DKK)'
 INVENTORY_FILE, SALES_FILE, DATE_FILE = 'master_inventory.csv', 'master_sales.csv', 'dates.csv'
 
 SIGNAL_CODES = ['500', '550', '600', '601', '602', '604', '611', '612', '613', '614', 
@@ -16,19 +18,17 @@ SIGNAL_CODES = ['500', '550', '600', '601', '602', '604', '611', '612', '613', '
 def get_brand(season_code):
     return "Signal" if str(season_code).strip() in SIGNAL_CODES else "Co'Couture"
 
-def get_brand_logo(brand_name):
-    """Matcher dine filnavne i mappen."""
-    if brand_name == "Signal":
-        return "Signal logo.jpg"
-    elif brand_name == "Co'Couture":
-        return "Cocouture logo.jpg"
-    return None
-
 def load_data(file_path):
-    return pd.read_csv(file_path) if os.path.exists(file_path) else pd.DataFrame()
+    if os.path.exists(file_path):
+        try:
+            df = pd.read_csv(file_path)
+            df.columns = [c.strip() for c in df.columns]
+            return df
+        except: return pd.DataFrame()
+    return pd.DataFrame()
 
-def save_dates(inv_date, sales_start, sales_end):
-    df = pd.DataFrame({'type': ['inv', 'sales_start', 'sales_end'], 'date': [inv_date, sales_start, sales_end]})
+def save_dates(inv_date, s_start, s_end, extract_date):
+    df = pd.DataFrame({'type': ['inv', 'sales_start', 'sales_end', 'extract_date'], 'date': [str(inv_date), str(s_start), str(s_end), str(extract_date)]})
     df.to_csv(DATE_FILE, index=False)
 
 def split_product_details(name):
@@ -39,157 +39,141 @@ def split_product_details(name):
     if len(parts) >= 4:
         res['Sæson'], res['Stylenummer'], res['Style_Navn'], res['Størrelse'] = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[-1].strip()
     elif len(parts) > 1:
-        res['Style_Navn'], res['Størrelse'] = sep.join(parts[:-1]).strip(), parts[-1].strip()
+        res['Style_Navn'], res['Størrelse'] = "-".join(parts[:-1]).strip(), parts[-1].strip()
     return pd.Series(res)
 
 # --- APP SETUP ---
-st.set_page_config(page_title="Ringsted Outlet Dashboard", layout="wide")
-st.title("📊 Ringsted Outlet Dashboard")
+st.set_page_config(page_title="Ringsted Outlet Intel", layout="wide")
 
-menu = st.sidebar.radio("Menu", ["Dashboard", "Størrelses Analyse", "Lager Analyse", "Strategisk Analyse", "Indkøbs Forslag", "Upload Data"])
+inv = load_data(INVENTORY_FILE)
+sales = load_data(SALES_FILE)
+dates = load_data(DATE_FILE)
 
-if menu == "Upload Data":
-    st.header("Konfiguration af Data")
+st.sidebar.title("🏢 Management")
+menu = st.sidebar.selectbox("Vælg Analyse", ["📊 Overblik", "📏 Størrelses Profil", "🎯 Strategisk Analyse", "📥 Upload Data"])
+
+# --- UPLOAD LOGIK ---
+if menu == "📥 Upload Data":
+    st.header("📦 Datastyring")
+    d_df = load_data(DATE_FILE)
     col_a, col_b = st.columns(2)
     with col_a:
-        inv_date = st.date_input("Dato for lageropgørelse", datetime.now())
-        f_inv = st.file_uploader("Upload Lagerfil", type=['xlsx', 'csv'])
+        st.subheader("Lager (Master)")
+        inv_date = st.date_input("Dato for master-status", datetime.now() if d_df.empty else pd.to_datetime(d_df.iloc[0,1], dayfirst=True))
+        f_inv = st.file_uploader("Upload Lagerfil", type=['xlsx', 'csv'], key="inv_up")
     with col_b:
-        s_start = st.date_input("Start dato", datetime.now())
-        s_end = st.date_input("Slut dato", datetime.now())
-        f_sales = st.file_uploader("Upload Salgsfil", type=['xlsx', 'csv'])
-    if st.button("💾 GEM OG OPDATER"):
-        if f_inv and f_sales:
+        st.subheader("Salgsdata")
+        f_sales = st.file_uploader("Upload Salgsfil", type=['xlsx', 'csv'], key="sales_up")
+    
+    if st.button("🚀 GEM OG OPDATER DASHBOARD"):
+        if f_inv:
+            df_i = pd.read_excel(f_inv) if f_inv.name.endswith('xlsx') else pd.read_csv(f_inv)
+            df_i.to_csv(INVENTORY_FILE, index=False)
+        if f_sales:
+            raw = pd.read_excel(f_sales) if f_sales.name.endswith('xlsx') else pd.read_csv(f_sales)
+            s_start, s_end, extract_date = "Ukendt", "Ukendt", "Ukendt"
             try:
-                df_i = pd.read_excel(f_inv) if f_inv.name.endswith('xlsx') else pd.read_csv(f_inv)
-                df_s = pd.read_excel(f_sales) if f_sales.name.endswith('xlsx') else pd.read_csv(f_sales)
-                df_i.to_csv(INVENTORY_FILE, index=False); df_s.to_csv(SALES_FILE, index=False)
-                save_dates(inv_date, s_start, s_end)
-                st.success("Data gemt korrekt! Skift nu menu for at se resultatet.")
+                for i in range(len(raw)):
+                    if "periode" in str(raw.iloc[i, 0]).lower():
+                        s_start, s_end, extract_date = raw.iloc[i+1, 0], raw.iloc[i+1, 1], raw.iloc[i+1, 3]
+                        break
+                total_idx = raw[raw[S_NAME].astype(str).str.contains("Total", case=False, na=False)].index
+                clean_sales = raw.iloc[:total_idx[0]] if not total_idx.empty else raw
+                clean_sales = clean_sales.dropna(subset=[S_ID])
+                clean_sales.to_csv(SALES_FILE, index=False)
+                save_dates(inv_date, s_start, s_end, extract_date)
+                st.success(f"Data gemt! Periode: {s_start} - {s_end}")
             except Exception as e: st.error(f"Fejl: {e}")
 
+# --- DASHBOARD LOGIK ---
+elif not sales.empty and not inv.empty:
+    # DATA ENGINE
+    sales[S_QTY] = pd.to_numeric(sales[S_QTY], errors='coerce').fillna(0)
+    sales[S_TOT] = pd.to_numeric(sales[S_TOT], errors='coerce').fillna(0)
+    inv[I_QTY] = pd.to_numeric(inv[I_QTY], errors='coerce').fillna(0)
+
+    for df, col in [(sales, S_NAME), (inv, I_NAME)]:
+        details = df[col].apply(split_product_details)
+        for c in details.columns: df[c] = details[c]
+    
+    inv['Brand'] = inv['Sæson'].apply(get_brand)
+    sales['Brand'] = sales['Sæson'].apply(get_brand)
+    
+    # Nedskrivning
+    sales_sum = sales.groupby(S_ID)[S_QTY].sum().reset_index()
+    inv_current = pd.merge(inv, sales_sum, left_on=I_ID, right_on=S_ID, how='left').fillna(0)
+    inv_current[I_QTY] = inv_current[I_QTY] - inv_current[S_QTY]
+
+    brands = st.sidebar.multiselect("Vælg Brand", ["Signal", "Co'Couture"], default=["Signal", "Co'Couture"])
+    f_inv = inv_current[inv_current['Brand'].isin(brands)]
+    f_sales = sales[sales['Brand'].isin(brands)]
+
+    if menu == "📊 Overblik":
+        st.header("Hovednøgletal")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Omsætning", f"{f_sales[S_TOT].sum():,.0f} kr")
+        c2.metric("Solgte enheder", f"{f_sales[S_QTY].sum():,.0f}")
+        c3.metric("Lagerbeholdning", f"{f_inv[I_QTY].sum():,.0f}")
+        
+        col_l, col_r = st.columns([2, 1])
+        with col_l:
+            st.plotly_chart(px.bar(f_sales.groupby(S_CAT)[S_TOT].sum().reset_index(), x=S_CAT, y=S_TOT, color=S_CAT, title="Omsætning pr. Kategori"), use_container_width=True)
+        with col_r:
+            st.plotly_chart(px.pie(f_sales, values=S_TOT, names='Brand', hole=0.4, title="Brand Fordeling"), use_container_width=True)
+
+    elif menu == "📏 Størrelses Profil":
+        st.header("📏 Størrelses- & Tendensanalyse")
+        
+        prod_cats = sorted(f_inv[I_CAT].unique())
+        sel_prod_cat = st.multiselect("Filtrer på Produktgruppe:", prod_cats)
+        
+        d_inv = f_inv.copy()
+        d_sales = f_sales.copy()
+        if sel_prod_cat:
+            d_inv = d_inv[d_inv[I_CAT].isin(sel_prod_cat)]
+            d_sales = d_sales[d_sales[S_CAT].isin(sel_prod_cat)]
+
+        # Sammenligning Lager vs Salg
+        size_order = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL', '34', '36', '38', '40', '42', '44', '46']
+        
+        s_stats = d_sales.groupby('Størrelse')[S_QTY].sum().reset_index().rename(columns={S_QTY: 'Solgt'})
+        i_stats = d_inv.groupby('Størrelse')[I_QTY].sum().reset_index().rename(columns={I_QTY: 'På Lager'})
+        
+        comp = pd.merge(i_stats, s_stats, on='Størrelse', how='outer').fillna(0)
+        comp['sort'] = comp['Størrelse'].apply(lambda x: size_order.index(x) if x in size_order else 99)
+        comp = comp.sort_values('sort')
+
+        fig_comp = go.Figure()
+        fig_comp.add_trace(go.Bar(x=comp['Størrelse'], y=comp['På Lager'], name='Aktuelt Lager', marker_color='#1f77b4'))
+        fig_comp.add_trace(go.Bar(x=comp['Størrelse'], y=comp['Solgt'], name='Solgt i perioden', marker_color='#ff7f0e'))
+        fig_comp.update_layout(barmode='group', title="Lager vs. Salg pr. Størrelse", template="plotly_white")
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        # Sell-through pr størrelse
+        st.subheader("💡 Tendens: Hvilke størrelser mangler vi?")
+        comp['Sell-Through %'] = (comp['Solgt'] / (comp['På Lager'] + comp['Solgt']) * 100).fillna(0)
+        
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            fig_st = px.line(comp, x='Størrelse', y='Sell-Through %', markers=True, title="Efterspørgselstryk (Sell-Through % pr. størrelse)")
+            st.plotly_chart(fig_st, use_container_width=True)
+        with c2:
+            st.write("🔥 **Hot Sizes** (Højt salg, lavt lager):")
+            hot = comp[comp['Sell-Through %'] > 50].sort_values('Sell-Through %', ascending=False)
+            st.dataframe(hot[['Størrelse', 'På Lager', 'Solgt', 'Sell-Through %']], hide_index=True)
+
+    elif menu == "🎯 Strategisk Analyse":
+        st.header("Strategisk Overblik")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("💰 Top 10 Kategorier (Indtjening)")
+            top_cat = f_sales.groupby(S_CAT)[S_TOT].sum().sort_values(ascending=False).head(10).reset_index()
+            st.plotly_chart(px.bar(top_cat, x=S_TOT, y=S_CAT, orientation='h', color=S_TOT, color_continuous_scale="Greens"), use_container_width=True)
+        with col2:
+            st.subheader("📉 Rabat-tjek (Markdown %)")
+            md = f_sales.groupby(S_CAT).agg({S_TOT: 'sum', S_DISC: 'sum'}).reset_index()
+            md['Rabat %'] = (md[S_DISC] / (md[S_TOT] + md[S_DISC]) * 100).fillna(0)
+            st.plotly_chart(px.bar(md.sort_values('Rabat %', ascending=False).head(10), x='Rabat %', y=S_CAT, orientation='h', color='Rabat %', color_continuous_scale="Reds"), use_container_width=True)
+
 else:
-    inv, sales, dates = load_data(INVENTORY_FILE), load_data(SALES_FILE), load_data(DATE_FILE)
-    if not inv.empty and not sales.empty and not dates.empty:
-        # Præ-processering
-        for df in [inv, sales]:
-            name_col = INV_NAME if INV_NAME in df.columns else SALES_NAME
-            details = df[name_col].apply(split_product_details)
-            for col in details.columns: df[col] = details[col]
-            df['Brand'] = df['Sæson'].apply(get_brand)
-            
-        for c in [INV_QTY, INV_COST, INV_RRP]: 
-            if c in inv.columns: inv[c] = pd.to_numeric(inv[c], errors='coerce').fillna(0)
-        for c in [SALES_QTY, SALES_PRICE]: sales[c] = pd.to_numeric(sales[c], errors='coerce').fillna(0)
-        
-        skrald = ['total', 'diverse', 'pose', 'gaveindpakning', 'gebyr']
-        sales = sales[~sales[SALES_NAME].astype(str).str.lower().str.contains('|'.join(skrald))]
-
-        # SIDEBAR FILTRE
-        st.sidebar.header("🔍 Analyse Filtre")
-        sel_brand = st.sidebar.multiselect("Vælg Brand", ["Signal", "Co'Couture"])
-        
-        # VIS LOGO HVIS ÉT BRAND ER VALGT
-        if len(sel_brand) == 1:
-            logo_fn = get_brand_logo(sel_brand[0])
-            if logo_fn and os.path.exists(logo_fn):
-                st.sidebar.image(logo_fn, use_container_width=True)
-
-        sel_cat = st.sidebar.selectbox("Kategori", ["Alle"] + sorted(inv[INV_CAT].dropna().unique().tolist()))
-        
-        f_inv, f_sales = inv.copy(), sales.copy()
-        if sel_brand:
-            f_inv, f_sales = f_inv[f_inv['Brand'].isin(sel_brand)], f_sales[f_sales['Brand'].isin(sel_brand)]
-        if sel_cat != "Alle":
-            f_inv, f_sales = f_inv[f_inv[INV_CAT] == sel_cat], f_sales[f_sales[SALES_CAT] == sel_cat]
-
-        # Fælles Beregninger
-        merged_sales = pd.merge(f_sales, inv[[INV_ID, INV_COST, INV_RRP]], left_on=SALES_ID, right_on=INV_ID, how='left')
-        merged_sales[INV_COST] = merged_sales[INV_COST].fillna(0)
-        merged_sales[INV_RRP] = merged_sales[INV_RRP].fillna(merged_sales[SALES_PRICE])
-        revenue = f_sales[SALES_PRICE].sum()
-        profit = revenue - (merged_sales[SALES_QTY] * merged_sales[INV_COST]).sum()
-
-        if menu == "Dashboard":
-            st.info(f"📅 **Lager pr:** {dates.iloc[0,1]} | **Salg:** {dates.iloc[1,1]} til {dates.iloc[2,1]}")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Lager (Stk)", f"{f_inv[INV_QTY].sum():,.0f}")
-            m2.metric("Omsætning", f"{revenue:,.0f} kr")
-            m3.metric("Profit", f"{profit:,.0f} kr")
-            m4.metric("GM %", f"{(profit/revenue*100 if revenue>0 else 0):.1f}%")
-            
-            st.divider()
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("🏆 Top Styles")
-                st.bar_chart(f_sales.groupby('Style_Navn')[SALES_QTY].sum().sort_values(ascending=False).head(10))
-            with c2:
-                st.subheader("📊 Brand Omsætning")
-                st.bar_chart(f_sales.groupby('Brand')[SALES_PRICE].sum())
-
-        elif menu == "Lager Analyse":
-            st.subheader("📈 Dybdegående Lager & Sundhedsanalyse")
-            d1, d2 = pd.to_datetime(dates.iloc[1,1]), pd.to_datetime(dates.iloc[2,1])
-            days = max((d2 - d1).days + 1, 1)
-
-            cat_inv = f_inv.groupby(INV_CAT).agg(Lager_Stk=(INV_QTY, 'sum'), Lager_Værdi_Kost=(INV_COST, lambda x: (x * f_inv.loc[x.index, INV_QTY]).sum())).reset_index()
-            merged_cat = merged_sales.groupby(SALES_CAT).agg(Solgt_Stk=(SALES_QTY, 'sum'), Omsætning=(SALES_PRICE, 'sum'), Total_Kost=(SALES_QTY, lambda x: (x * merged_sales.loc[x.index, INV_COST]).sum())).reset_index()
-            merged_cat.rename(columns={SALES_CAT: INV_CAT}, inplace=True)
-            
-            df_anal = pd.merge(cat_inv, merged_cat, on=INV_CAT, how='left').fillna(0)
-            df_anal['STR %'] = (df_anal['Solgt_Stk'] / (df_anal['Lager_Stk'] + df_anal['Solgt_Stk']) * 100).fillna(0)
-            df_anal['Dage til udsolgt'] = (df_anal['Lager_Stk'] / (df_anal['Solgt_Stk'] / days)).replace([float('inf')], 0).fillna(0)
-            df_anal['Profit'] = df_anal['Omsætning'] - df_anal['Total_Kost']
-            df_anal['GM %'] = (df_anal['Profit'] / df_anal['Omsætning'] * 100).fillna(0)
-            
-            st.dataframe(df_anal.sort_values(by='STR %', ascending=False).style.format({'Lager_Værdi_Kost': '{:,.0f} kr', 'Omsætning': '{:,.0f} kr', 'Profit': '{:,.0f} kr', 'GM %': '{:.1f}%', 'STR %': '{:.1f}%', 'Dage til udsolgt': '{:.0f}'}), use_container_width=True, hide_index=True)
-
-        elif menu == "Størrelses Analyse":
-            st.subheader("📏 Dybdegående Størrelses Analyse")
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.write("**Salg pr. størrelse**")
-                st.bar_chart(f_sales.groupby('Størrelse')[SALES_QTY].sum())
-            with col2:
-                target_style = st.selectbox("Vælg Style for Størrelses Matrix (Lager):", sorted(f_inv['Style_Navn'].unique()))
-                matrix = f_inv[f_inv['Style_Navn'] == target_style].pivot_table(index='Style_Navn', columns='Størrelse', values=INV_QTY, aggfunc='sum').fillna(0)
-                st.dataframe(matrix, use_container_width=True)
-            
-            st.divider()
-            st.write("**Broken Sizes (Styles med under 3 størrelser tilbage)**")
-            broken = f_inv.groupby('Style_Navn').agg(Antal_Str=('Størrelse', 'count'), Total_Lager=(INV_QTY, 'sum'))
-            st.dataframe(broken[broken['Antal_Str'] < 3].sort_values(by='Total_Lager', ascending=False), use_container_width=True)
-
-        elif menu == "Strategisk Analyse":
-            st.subheader("🎯 Rabat Analyse & Winner/Loser Matrix")
-            cat_stats = merged_sales.groupby(SALES_CAT).apply(lambda x: pd.Series({'Solgt_Stk': x[SALES_QTY].sum(), 'GM %': ((x[SALES_PRICE].sum() - (x[SALES_QTY]*x[INV_COST]).sum()) / x[SALES_PRICE].sum() * 100) if x[SALES_PRICE].sum() > 0 else 0})).reset_index()
-            avg_sales, avg_gm = cat_stats['Solgt_Stk'].median(), cat_stats['GM %'].median()
-            def classify(row):
-                if row['Solgt_Stk'] >= avg_sales and row['GM %'] >= avg_gm: return "⭐ Winner"
-                if row['Solgt_Stk'] < avg_sales and row['GM %'] >= avg_gm: return "❓ Spørgsmålstegn"
-                if row['Solgt_Stk'] >= avg_sales and row['GM %'] < avg_gm: return "🚜 Arbejdshest"
-                return "🦴 Loser"
-            cat_stats['Status'] = cat_stats.apply(classify, axis=1)
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write("### Winner/Loser Status")
-                st.dataframe(cat_stats.sort_values('Status'), use_container_width=True, hide_index=True)
-            with c2:
-                st.write("### Rabat (Markdown) Analyse")
-                markdown_df = merged_sales.groupby(SALES_CAT).apply(lambda x: pd.Series({'Vejl_Værdi': (x[SALES_QTY] * x[INV_RRP]).sum(), 'Faktisk_Omsætning': x[SALES_PRICE].sum()})).reset_index()
-                markdown_df['Rabat %'] = (1 - (markdown_df['Faktisk_Omsætning'] / markdown_df['Vejl_Værdi'])) * 100
-                st.dataframe(markdown_df.sort_values('Rabat %', ascending=False).style.format({'Rabat %': '{:.1f}%', 'Faktisk_Omsætning': '{:,.0f} kr'}), use_container_width=True, hide_index=True)
-
-        elif menu == "Indkøbs Forslag":
-            st.subheader("📡 Reorder Radar (Indkøbs Forslag)")
-            reorder_calc = f_inv.groupby('Style_Navn').agg({INV_QTY: 'sum'}).reset_index()
-            sales_calc = f_sales.groupby('Style_Navn').agg({SALES_QTY: 'sum'}).reset_index()
-            radar_df = pd.merge(reorder_calc, sales_calc, on='Style_Navn', how='inner')
-            radar_df['Score'] = radar_df[SALES_QTY] / (radar_df[INV_QTY] + 1)
-            
-            st.write("Disse styles har et højt salg sammenlignet med det lave lager:")
-            st.dataframe(radar_df[radar_df[INV_QTY] < 5].sort_values(by='Score', ascending=False)[['Style_Navn', INV_QTY, SALES_QTY]].rename(columns={INV_QTY: 'På lager', SALES_QTY: 'Solgt'}), use_container_width=True, hide_index=True)
-
-    else:
-        st.warning("⚠️ Ingen data fundet. Gå til 'Upload Data' for at starte dashboardet.")
+    st.warning("⚠️ Ingen data fundet. Gå til 'Upload Data'.")
